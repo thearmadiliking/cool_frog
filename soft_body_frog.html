@@ -1,0 +1,646 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Frog Soft Body Procedural Animation</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #282C34; }
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = 800;
+        canvas.height = 600;
+
+        // Constants from Processing
+        const PI = Math.PI;
+        const TWO_PI = 2 * Math.PI;
+        const HALF_PI = Math.PI / 2;
+
+        // Utility functions from Util.pde
+        function constrainAngle(angle, anchor, constraint) {
+            if (Math.abs(relativeAngleDiff(angle, anchor)) <= constraint) {
+                return simplifyAngle(angle);
+            }
+            if (relativeAngleDiff(angle, anchor) > constraint) {
+                return simplifyAngle(anchor - constraint);
+            }
+            return simplifyAngle(anchor + constraint);
+        }
+
+        function relativeAngleDiff(angle, anchor) {
+            angle = simplifyAngle(angle + PI - anchor);
+            anchor = PI;
+            return anchor - angle;
+        }
+
+        function simplifyAngle(angle) {
+            while (angle >= TWO_PI) angle -= TWO_PI;
+            while (angle < 0) angle += TWO_PI;
+            return angle;
+        }
+
+        // Vector2 class for 2D vectors
+        class Vector2 {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+            }
+            static add(a, b) {
+                return new Vector2(a.x + b.x, a.y + b.y);
+            }
+            static sub(a, b) {
+                return new Vector2(a.x - b.x, a.y - b.y);
+            }
+            static lerp(a, b, t) {
+                return new Vector2(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+            }
+            copy() {
+                return new Vector2(this.x, this.y);
+            }
+            setMag(mag) {
+                const currentMag = this.mag();
+                if (currentMag === 0) return this;
+                const scale = mag / currentMag;
+                return new Vector2(this.x * scale, this.y * scale);
+            }
+            mag() {
+                return Math.sqrt(this.x * this.x + this.y * this.y);
+            }
+            heading() {
+                return Math.atan2(this.y, this.x);
+            }
+            rotate(angle) {
+                const cosA = Math.cos(angle);
+                const sinA = Math.sin(angle);
+                return new Vector2(
+                    this.x * cosA - this.y * sinA,
+                    this.x * sinA + this.y * cosA
+                );
+            }
+            mult(scalar) {
+                return new Vector2(this.x * scalar, this.y * scalar);
+            }
+            static fromAngle(angle) {
+                return new Vector2(Math.cos(angle), Math.sin(angle));
+            }
+            static dist(a, b) {
+                return Math.sqrt((b.x - a.x) ** 2 + (b.y - a.y) ** 2);
+            }
+        }
+
+        // BlobPoint class from Blob.pde
+        class BlobPoint {
+            constructor(pos) {
+                this.pos = pos.copy();
+                this.ppos = pos.copy();
+                this.displacement = new Vector2(0, 0);
+                this.displacementWeight = 0;
+            }
+            verletIntegrate() {
+                const temp = this.pos.copy();
+                const vel = Vector2.sub(this.pos, this.ppos).mult(0.99);
+                this.pos = Vector2.add(this.pos, vel);
+                this.ppos = temp;
+            }
+            applyGravity() {
+                this.pos.y += 1;
+            }
+            accumulateDisplacement(offset) {
+                this.displacement = Vector2.add(this.displacement, offset);
+                this.displacementWeight += 1;
+            }
+            applyDisplacement() {
+                if (this.displacementWeight > 0) {
+                    this.displacement = this.displacement.mult(1 / this.displacementWeight);
+                    this.pos = Vector2.add(this.pos, this.displacement);
+                    this.displacement = new Vector2(0, 0);
+                    this.displacementWeight = 0;
+                }
+            }
+            keepInBounds() {
+                this.pos.x = Math.max(0, Math.min(this.pos.x, canvas.width));
+                this.pos.y = Math.max(0, Math.min(this.pos.y, canvas.height));
+            }
+            collideWithMouse(mousePos, mousePressed) {
+                if (mousePressed && Vector2.dist(this.pos, mousePos) < 100) {
+                    const diff = Vector2.sub(this.pos, mousePos).setMag(100);
+                    this.pos = Vector2.add(mousePos, diff);
+                }
+            }
+        }
+
+        // Blob class from Blob.pde
+        class Blob {
+            constructor(origin, numPoints, radius, puffiness) {
+                this.radius = radius;
+                this.area = radius * radius * PI * puffiness;
+                this.circumference = radius * TWO_PI;
+                this.chordLength = this.circumference / numPoints;
+                this.points = [];
+                for (let i = 0; i < numPoints; i++) {
+                    const offset = new Vector2(
+                        Math.cos(TWO_PI * i / numPoints - HALF_PI) * radius,
+                        Math.sin(TWO_PI * i / numPoints - HALF_PI) * radius
+                    );
+                    this.points.push(new BlobPoint(Vector2.add(origin, offset)));
+                }
+            }
+            update(mousePos, mousePressed) {
+                // Verlet integration
+                this.points.forEach(point => {
+                    point.verletIntegrate();
+                    point.applyGravity();
+                });
+
+                // Multiple iterations for convergence
+                for (let j = 0; j < 10; j++) {
+                    // Distance constraints
+                    for (let i = 0; i < this.points.length; i++) {
+                        const cur = this.points[i];
+                        const next = this.points[i === this.points.length - 1 ? 0 : i + 1];
+                        const diff = Vector2.sub(next.pos, cur.pos);
+                        if (diff.mag() > this.chordLength) {
+                            const error = (diff.mag() - this.chordLength) / 2;
+                            const offset = diff.setMag(error);
+                            const negOffset = offset.mult(-1);
+                            cur.accumulateDisplacement(offset);
+                            next.accumulateDisplacement(negOffset);
+                        }
+                    }
+
+                    // Dilation constraints
+                    const error = this.area - this.getArea();
+                    const offset = error / this.circumference;
+                    for (let i = 0; i < this.points.length; i++) {
+                        const prev = this.points[i === 0 ? this.points.length - 1 : i - 1];
+                        const cur = this.points[i];
+                        const next = this.points[i === this.points.length - 1 ? 0 : i + 1];
+                        const secant = Vector2.sub(next.pos, prev.pos);
+                        const normal = secant.rotate(-HALF_PI).setMag(offset);
+                        cur.accumulateDisplacement(normal);
+                    }
+
+                    // Apply displacements
+                    this.points.forEach(point => point.applyDisplacement());
+
+                    // Collision detection
+                    this.points.forEach(point => {
+                        point.keepInBounds();
+                        point.collideWithMouse(mousePos, mousePressed);
+                    });
+                }
+            }
+            getArea() {
+                let area = 0;
+                for (let i = 0; i < this.points.length; i++) {
+                    const cur = this.points[i].pos;
+                    const next = this.points[i === this.points.length - 1 ? 0 : i + 1].pos;
+                    area += ((cur.x - next.x) * (cur.y + next.y) / 2);
+                }
+                return area;
+            }
+            display() {
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 8;
+                ctx.fillStyle = '#55917F';
+                ctx.beginPath();
+                const points = this.points;
+                ctx.moveTo(points[points.length - 2].pos.x, points[points.length - 2].pos.y);
+                ctx.lineTo(points[points.length - 1].pos.x, points[points.length - 1].pos.y);
+                points.forEach(point => ctx.lineTo(point.pos.x, point.pos.y));
+                ctx.lineTo(points[0].pos.x, points[0].pos.y);
+                ctx.lineTo(points[1].pos.x, points[1].pos.y);
+                ctx.stroke();
+                ctx.fill();
+            }
+        }
+
+        // LimbPoint class from Limb.pde
+        class LimbPoint {
+            constructor(pos) {
+                this.pos = pos.copy();
+                this.ppos = pos.copy();
+                this.angle = 0;
+            }
+            verletIntegrate() {
+                const temp = this.pos.copy();
+                const vel = Vector2.sub(this.pos, this.ppos).mult(0.95);
+                this.pos = Vector2.add(this.pos, vel);
+                this.ppos = temp;
+            }
+            applyGravity() {
+                this.pos.y += 1;
+            }
+            applyConstraint(anchor, normal, distance, angleRange, angleOffset) {
+                const anchorAngle = normal + angleOffset;
+                const curAngle = Vector2.sub(anchor, this.pos).heading();
+                this.angle = constrainAngle(curAngle, anchorAngle, angleRange);
+                this.pos = Vector2.sub(anchor, Vector2.fromAngle(this.angle).setMag(distance));
+            }
+            keepInBounds() {
+                this.pos.x = Math.max(0, Math.min(this.pos.x, canvas.width));
+                this.pos.y = Math.max(0, Math.min(this.pos.y, canvas.height));
+            }
+        }
+
+        // Limb class from Limb.pde
+        class Limb {
+            constructor(origin, distance, elbowRange, elbowOffset, footRange, footOffset) {
+                this.distance = distance;
+                this.elbowRange = elbowRange;
+                this.elbowOffset = elbowOffset;
+                this.footRange = footRange;
+                this.footOffset = footOffset;
+                this.elbow = new LimbPoint(Vector2.add(origin, new Vector2(0, distance)));
+                this.foot = new LimbPoint(Vector2.add(this.elbow.pos, new Vector2(0, distance)));
+            }
+            resolve(anchor, normal) {
+                this.elbow.verletIntegrate();
+                this.elbow.applyGravity();
+                this.elbow.applyConstraint(anchor, normal, this.distance, this.elbowRange, this.elbowOffset);
+                this.elbow.keepInBounds();
+
+                this.foot.verletIntegrate();
+                this.foot.applyGravity();
+                this.foot.applyConstraint(this.elbow.pos, this.elbow.angle, this.distance, this.footRange, this.footOffset);
+                this.foot.keepInBounds();
+            }
+            drawFrontLeg(anchor) {
+                // Outline
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 48;
+                ctx.beginPath();
+                ctx.moveTo(anchor.x, anchor.y);
+                ctx.lineTo(anchor.x, anchor.y);
+                ctx.lineTo(this.elbow.pos.x, this.elbow.pos.y);
+                ctx.lineTo(this.foot.pos.x, this.foot.pos.y);
+                ctx.lineTo(this.foot.pos.x, this.foot.pos.y);
+                ctx.stroke();
+
+                // Fill
+                ctx.strokeStyle = '#55917F';
+                ctx.lineWidth = 34;
+                ctx.beginPath();
+                ctx.moveTo(anchor.x, anchor.y);
+                ctx.lineTo(anchor.x, anchor.y);
+                ctx.lineTo(this.elbow.pos.x, this.elbow.pos.y);
+                ctx.lineTo(this.foot.pos.x, this.foot.pos.y);
+                ctx.lineTo(this.foot.pos.x, this.foot.pos.y);
+                ctx.stroke();
+
+                // Toes
+                const footNormal = Vector2.sub(this.elbow.pos, this.foot.pos).heading() + HALF_PI;
+                ctx.save();
+                ctx.translate(this.foot.pos.x, this.foot.pos.y);
+                ctx.rotate(footNormal - PI / 4);
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 6;
+                ctx.fillStyle = '#55917F';
+                [0, PI/6, PI/3, PI/2].forEach((angle, i) => {
+                    ctx.save();
+                    ctx.rotate(angle);
+                    ctx.beginPath();
+                    ctx.ellipse(0, i < 2 ? 16 : 28, 8, 27.5, 0, 0, TWO_PI);
+                    ctx.stroke();
+                    ctx.fill();
+                    ctx.restore();
+                });
+                // Hide overlaps
+                ctx.fillStyle = '#55917F';
+                ctx.strokeStyle = 'none';
+                [PI/6, PI/3, PI/2].forEach((angle, i) => {
+                    ctx.save();
+                    ctx.rotate(-angle);
+                    ctx.beginPath();
+                    ctx.ellipse(0, i < 1 ? 28 : 16, 5, 24.5, 0, 0, TWO_PI);
+                    ctx.fill();
+                    ctx.restore();
+                });
+                ctx.restore();
+
+                // Hide shoulder and foot connections
+                const shoulderNormal = Vector2.sub(anchor, this.elbow.pos).heading();
+                ctx.fillStyle = '#55917F';
+                ctx.beginPath();
+                ctx.arc(anchor.x, anchor.y, 24.5, -HALF_PI + shoulderNormal, HALF_PI + shoulderNormal);
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(this.foot.pos.x, this.foot.pos.y, 17.5, 0, TWO_PI);
+                ctx.fill();
+            }
+            drawHindLeg(anchor, right) {
+                const offset = right ? -PI/8 : PI/8;
+                const footNormal = Vector2.sub(this.elbow.pos, this.foot.pos).heading() + HALF_PI + offset;
+                const footShift = Vector2.add(this.foot.pos, Vector2.fromAngle(footNormal + HALF_PI).setMag(24));
+
+                // Outline
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 48;
+                ctx.beginPath();
+                ctx.moveTo(anchor.x, anchor.y);
+                ctx.lineTo(anchor.x, anchor.y);
+                ctx.lineTo(this.elbow.pos.x, this.elbow.pos.y);
+                ctx.lineTo(this.foot.pos.x, this.foot.pos.y);
+                ctx.lineTo(footShift.x, footShift.y);
+                ctx.lineTo(footShift.x, footShift.y);
+                ctx.stroke();
+
+                // Fill
+                ctx.strokeStyle = '#55917F';
+                ctx.lineWidth = 34;
+                ctx.beginPath();
+                ctx.moveTo(anchor.x, anchor.y);
+                ctx.lineTo(anchor.x, anchor.y);
+                ctx.lineTo(this.elbow.pos.x, this.elbow.pos.y);
+                ctx.lineTo(this.foot.pos.x, this.foot.pos.y);
+                ctx.lineTo(footShift.x, footShift.y);
+                ctx.lineTo(footShift.x, footShift.y);
+                ctx.stroke();
+
+                // Toes
+                ctx.save();
+                ctx.translate(footShift.x, footShift.y);
+                ctx.rotate(footNormal - PI/4 + offset);
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 6;
+                ctx.fillStyle = '#55917F';
+                [0, PI/6, PI/3, PI/2].forEach((angle, i) => {
+                    ctx.save();
+                    ctx.rotate(angle);
+                    ctx.beginPath();
+                    ctx.ellipse(0, i < 2 ? 16 : 28, 8, 27.5, 0, 0, TWO_PI);
+                    ctx.stroke();
+                    ctx.fill();
+                    ctx.restore();
+                });
+                // Hide overlaps
+                ctx.fillStyle = '#55917F';
+                ctx.strokeStyle = 'none';
+                [PI/6, PI/3, PI/2].forEach((angle, i) => {
+                    ctx.save();
+                    ctx.rotate(-angle);
+                    ctx.beginPath();
+                    ctx.ellipse(0, i < 1 ? 28 : 16, 5, 24.5, 0, 0, TWO_PI);
+                    ctx.fill();
+                    ctx.restore();
+                });
+                ctx.restore();
+
+                // Hide shoulder and foot connections
+                const shoulderNormal = Vector2.sub(anchor, this.elbow.pos).heading();
+                ctx.fillStyle = '#55917F';
+                ctx.beginPath();
+                ctx.arc(anchor.x, anchor.y, 24.5, -HALF_PI + shoulderNormal, HALF_PI + shoulderNormal);
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(footShift.x, footShift.y, 17.5, 0, TWO_PI);
+                ctx.fill();
+            }
+        }
+
+        // Frog class from Frog.pde
+        class Frog {
+            constructor(origin) {
+                this.blob = new Blob(origin, 16, 128, 1.5);
+                this.leftFrontLeg = new Limb(Vector2.sub(origin, new Vector2(80, 0)), 56, PI/4, PI/8, PI/5, -PI/4);
+                this.rightFrontLeg = new Limb(Vector2.sub(origin, new Vector2(-80, 0)), 56, PI/4, -PI/8, PI/5, PI/4);
+                this.leftHindLeg = new Limb(Vector2.sub(origin, new Vector2(100, 0)), 100, 1.9 * PI / 5, 2 * PI / 5, 2 * PI / 5, -2 * PI / 5);
+                this.rightHindLeg = new Limb(Vector2.sub(origin, new Vector2(-100, 0)), 100, 1.9 * PI / 5, -2 * PI / 5, 2 * PI / 5, 2 * PI / 5);
+            }
+            update(mousePos, mousePressed) {
+                this.blob.update(mousePos, mousePressed);
+
+                const leftFront = this.blob.points[12].pos;
+                const rightFront = this.blob.points[4].pos;
+                const leftFrontAnchor = Vector2.add(Vector2.lerp(leftFront, rightFront, 0.25), new Vector2(0, 10));
+                const rightFrontAnchor = Vector2.add(Vector2.lerp(leftFront, rightFront, 0.75), new Vector2(0, 10));
+                const midSecant = Vector2.sub(rightFront, leftFront).setMag(64);
+                const midNormal = midSecant.rotate(-HALF_PI).heading();
+                const leftHindAnchor = Vector2.add(Vector2.add(this.blob.points[11].pos, midSecant), new Vector2(0, 16));
+                const rightHindAnchor = Vector2.add(Vector2.sub(this.blob.points[5].pos, midSecant), new Vector2(0, 16));
+
+                this.leftFrontLeg.resolve(leftFrontAnchor, midNormal);
+                this.rightFrontLeg.resolve(rightFrontAnchor, midNormal);
+
+                // Hind leg adjustments
+                if (canvas.height - this.leftHindLeg.foot.pos.y < 100) {
+                    this.leftHindLeg.elbow.pos.y -= 1.5;
+                    this.leftHindLeg.foot.pos.x += 0.5;
+                }
+                if (canvas.height - this.rightHindLeg.foot.pos.y < 100) {
+                    this.rightHindLeg.elbow.pos.y -= 1.5;
+                    this.rightHindLeg.foot.pos.x -= 0.5;
+                }
+
+                this.leftHindLeg.resolve(leftHindAnchor, midNormal);
+                this.rightHindLeg.resolve(rightHindAnchor, midNormal);
+            }
+            drawBody() {
+                this.blob.display();
+            }
+            drawHead() {
+                const top = this.blob.points[0].pos;
+                const topNormal = Vector2.sub(this.blob.points[2].pos, this.blob.points[this.blob.points.length - 2].pos).heading();
+
+                ctx.save();
+                ctx.translate(top.x, top.y);
+                ctx.rotate(topNormal);
+
+                // Head
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 8;
+                ctx.fillStyle = '#55917F';
+                ctx.beginPath();
+                ctx.arc(0, 75, 125, -PI, 0);
+                ctx.stroke();
+                ctx.fillStyle = '#55917F';
+                ctx.beginPath();
+                ctx.ellipse(0, 75, 122, 109.5, 0, 0, TWO_PI);
+                ctx.fill();
+
+                // Eye sockets
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 8;
+                ctx.fillStyle = 'none';
+                ctx.beginPath();
+                ctx.arc(-75, -10, 37.5, -PI - PI/4.6, -PI/5.6);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.arc(75, -10, 37.5, -PI + PI/5.6, PI/4.6);
+                ctx.stroke();
+                ctx.fillStyle = '#55917F';
+                ctx.beginPath();
+                ctx.ellipse(-75, -10, 35, 35, 0, 0, TWO_PI);
+                ctx.fill();
+                ctx.beginPath();
+                ctx.ellipse(75, -10, 35, 35, 0, 0, TWO_PI);
+                ctx.fill();
+
+                // Eyes
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 4;
+                ctx.fillStyle = '#F0995B';
+                ctx.beginPath();
+                ctx.ellipse(-75, -10, 24, 24, 0, 0, TWO_PI);
+                ctx.stroke();
+                ctx.fill();
+                ctx.beginPath();
+                ctx.ellipse(75, -10, 24, 24, 0, 0, TWO_PI);
+                ctx.stroke();
+                ctx.fill();
+
+                // Pupils
+                ctx.fillStyle = '#000';
+                ctx.strokeStyle = 'none';
+                ctx.save();
+                ctx.translate(-75, -10);
+                ctx.rotate(-PI/24);
+                ctx.beginPath();
+                ctx.ellipse(0, 0, 16, 9, 0, 0, TWO_PI);
+                ctx.fill();
+                ctx.restore();
+                ctx.save();
+                ctx.translate(75, -10);
+                ctx.rotate(PI/24);
+                ctx.beginPath();
+                ctx.ellipse(0, 0, 16, 9, 0, 0, TWO_PI);
+                ctx.fill();
+                ctx.restore();
+
+                // Chin
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 7;
+                ctx.fillStyle = 'none';
+                ctx.beginPath();
+                ctx.arc(0, 80, 46, PI/8, PI - PI/8);
+                ctx.stroke();
+
+                // Mouth
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 5;
+                ctx.beginPath();
+                ctx.moveTo(-90, 40);
+                ctx.bezierCurveTo(-45, 60, -35, 15, -10, 25);
+                ctx.bezierCurveTo(-5, 27, 5, 27, 10, 25);
+                ctx.bezierCurveTo(35, 15, 45, 60, 90, 40);
+                ctx.stroke();
+
+                // Nostrils
+                ctx.fillStyle = '#000';
+                ctx.save();
+                ctx.translate(-9, 5);
+                ctx.rotate(PI/6);
+                ctx.beginPath();
+                ctx.ellipse(0, 0, 1, 2.5, 0, 0, TWO_PI);
+                ctx.fill();
+                ctx.restore();
+                ctx.save();
+                ctx.translate(9, 5);
+                ctx.rotate(-PI/6);
+                ctx.beginPath();
+                ctx.ellipse(0, 0, 1, 2.5, 0, 0, TWO_PI);
+                ctx.fill();
+                ctx.restore();
+
+                ctx.restore();
+            }
+            drawFrontLegs() {
+                const left = this.blob.points[12].pos;
+                const right = this.blob.points[4].pos;
+                const leftAnchor = Vector2.add(Vector2.lerp(left, right, 0.25), new Vector2(0, 10));
+                const rightAnchor = Vector2.add(Vector2.lerp(left, right, 0.75), new Vector2(0, 10));
+                this.leftFrontLeg.drawFrontLeg(leftAnchor);
+                this.rightFrontLeg.drawFrontLeg(rightAnchor);
+            }
+            drawHindLegs() {
+                const left = this.blob.points[12].pos;
+                const right = this.blob.points[4].pos;
+                const midSecant = Vector2.sub(right, left).setMag(64);
+                const leftAnchor = Vector2.add(Vector2.add(this.blob.points[11].pos, midSecant), new Vector2(0, 16));
+                const rightAnchor = Vector2.add(Vector2.sub(this.blob.points[5].pos, midSecant), new Vector2(0, 16));
+                this.leftHindLeg.drawHindLeg(leftAnchor, false);
+                this.rightHindLeg.drawHindLeg(rightAnchor, true);
+            }
+            display() {
+                this.drawHindLegs();
+                this.drawBody();
+                this.drawHead();
+                this.drawFrontLegs();
+            }
+        }
+
+        // Main animation loop
+        const frog = new Frog(new Vector2(canvas.width / 2, canvas.height - 512));
+        let mousePos = new Vector2(canvas.width / 2, canvas.height / 2);
+        let mousePressed = false;
+
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            mousePos = new Vector2(e.clientX - rect.left, e.clientY - rect.top);
+        });
+
+        canvas.addEventListener('mousedown', () => {
+            mousePressed = true;
+        });
+
+        canvas.addEventListener('mouseup', () => {
+            mousePressed = false;
+        });
+
+        function animate() {
+            ctx.fillStyle = '#282C34';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            frog.update(mousePos, mousePressed);
+            frog.display();
+            requestAnimationFrame(animate);
+        }
+
+        animate();
+    </script>
+</body>
+</html>
